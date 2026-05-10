@@ -353,19 +353,18 @@ function renderPayGrid(){
 }
 
 function filterByViewer(list) {
-  if (selectedPayer === 'all') return list;
+  if (currentViewer === 'all') return list;
 
   return list
-    .filter(e => e.payer === selectedPayer || e.payer === 'split')
+    .filter(e =>
+      e.payer === currentViewer ||
+      e.payer === 'split'
+    )
     .map(e => ({
       ...e,
-      amount: e.payer === 'split' ? e.amount * 0.5 : e.amount
+      amount:
+        e.payer === 'split'
+          ? e.amount * 0.5
+          : e.amount
     }));
 }
-// ===== 初期化 =====
-window.onload = () => {
-  renderCatGrid();
-  renderPayGrid();
-  renderPayerGrid();
-  loadEntries();
-};
