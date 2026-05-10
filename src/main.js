@@ -121,6 +121,8 @@ window.openModal = function () {
   document.getElementById('inputMemo').value = '';
   document.getElementById('inputTags').value = '';
   setType('expense');
+  renderPayGrid();    // ← 追加
+  renderPayerGrid();  // ← 追加
   document.getElementById('overlay').classList.add('open');
 };
 
