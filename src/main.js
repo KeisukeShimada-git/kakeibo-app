@@ -1,6 +1,6 @@
 import {
   fetchEntries, addEntry, removeEntry,
-  fetchSplits, addSplit, settleSplit,
+  fetchSplits, settleSplit,
   fetchDebts, settleDebt,
   fetchSubscriptions, addSubscription, updateSubscription, removeSubscription,
   checkAndGenerateSubscriptions,
@@ -10,27 +10,24 @@ import {
 import {
   fmt, fmtSigned,
   getCat, getPay, getPayer,
-  CAT_COLORS, PAYMENTS,
-  CATS_EXPENSE, CATS_INCOME,
+  CAT_COLORS,
 } from './constants.js';
 
 import {
   showToast, openOverlay, closeOverlay,
   initEntryModal, openEntryModal,
-  initSplitModal, openSplitModal,
   initSubModal, openSubModal,
   filterByViewer,
 } from './ui.js';
 
 // ===== グローバル状態 =====
-let allEntries     = [];
-let allSplits      = [];
-let allDebts       = [];
-let allSubs        = [];
-let currentYear    = new Date().getFullYear();
-let currentMonth   = new Date().getMonth();   // 0-indexed
-let currentViewer  = 'all';
-let currentAnalysisTab = 'cat';
+let allEntries    = [];
+let allSplits     = [];
+let allDebts      = [];
+let allSubs       = [];
+let currentYear   = new Date().getFullYear();
+let currentMonth  = new Date().getMonth(); // 0-indexed
+let currentViewer = 'all';
 
 // ===== 初期化 =====
 async function init() {
@@ -39,29 +36,22 @@ async function init() {
   setupMonthNavs();
   setupAnalysisTabs();
 
-  // モーダル初期化
+  // 明細入力モーダル
+  // data.isSplit===true のとき store.js 側で splits/debts も自動作成する
   initEntryModal(async (data) => {
     await addEntry(data);
     await reload();
   });
 
-  initSplitModal(async (data) => {
-    await addSplit(data, true);
-    await reloadSettle();
-  });
-
+  // サブスクモーダル
   initSubModal(async (data) => {
     await addSubscription(data);
     await reloadSubs();
   });
 
-  // FAB
+  // FAB（ホーム画面の＋ボタン）
   document.getElementById('fabBtn')
     ?.addEventListener('click', openEntryModal);
-
-  // 精算ボタン
-  document.getElementById('addSplitBtn')
-    ?.addEventListener('click', openSplitModal);
 
   // サブスク追加ボタン
   document.getElementById('addSubBtn')
@@ -135,17 +125,17 @@ function setupViewerSwitches() {
 // ===== 月ナビ =====
 function setupMonthNavs() {
   const pairs = [
-    ['prevMonth',       'nextMonth',       'homeMonthLabel'],
-    ['listPrevMonth',   'listNextMonth',   'listMonthLabel'],
+    ['prevMonth',        'nextMonth',        'homeMonthLabel'],
+    ['listPrevMonth',    'listNextMonth',    'listMonthLabel'],
     ['analysisPrevMonth','analysisNextMonth','analysisMonthLabel'],
   ];
-  pairs.forEach(([prevId, nextId, labelId]) => {
-    document.getElementById(prevId)?.addEventListener('click', () => changeMonth(-1, labelId));
-    document.getElementById(nextId)?.addEventListener('click', () => changeMonth(1, labelId));
+  pairs.forEach(([prevId, nextId]) => {
+    document.getElementById(prevId)?.addEventListener('click', () => changeMonth(-1));
+    document.getElementById(nextId)?.addEventListener('click', () => changeMonth(1));
   });
 }
 
-function changeMonth(dir, labelId) {
+function changeMonth(dir) {
   currentMonth += dir;
   if (currentMonth < 0)  { currentMonth = 11; currentYear--; }
   if (currentMonth > 11) { currentMonth = 0;  currentYear++; }
@@ -155,7 +145,7 @@ function changeMonth(dir, labelId) {
 
 function updateMonthLabels() {
   const label = `${currentYear}年${currentMonth + 1}月`;
-  ['homeMonthLabel','listMonthLabel','analysisMonthLabel'].forEach(id => {
+  ['homeMonthLabel', 'listMonthLabel', 'analysisMonthLabel'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.textContent = label;
   });
@@ -168,11 +158,7 @@ function setupAnalysisTabs() {
       document.querySelectorAll('#screen-analysis .tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('#screen-analysis .tab-panel').forEach(p => p.classList.remove('active'));
       tab.classList.add('active');
-      currentAnalysisTab = tab.dataset.tab;
-      document.getElementById(`tab-${currentAnalysisTab}`)?.classList.add('active');
-      if (currentAnalysisTab === 'cat' || currentAnalysisTab === 'payment') {
-        renderAnalysis(filteredMonthEntries());
-      }
+      document.getElementById(`tab-${tab.dataset.tab}`)?.classList.add('active');
     });
   });
 }
@@ -193,35 +179,38 @@ function filteredMonthEntries() {
 function renderAll() {
   updateMonthLabels();
   const list = filteredMonthEntries();
-  renderSummary(list, 'homeTotalExpense', 'homeTotalIncome', 'homeTotalBalance');
+  renderSummary(list);
   renderHomeRecent(list);
   renderList(list);
-  renderAnalysis(list);
+  renderCatChart(list);
+  renderPaymentCF(list);
   renderSettle();
   renderSubs();
 }
 
 // ===== サマリー =====
-function renderSummary(list, expId, incId, balId) {
+function renderSummary(list) {
   const expense = list.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
   const income  = list.filter(e => e.type === 'income' ).reduce((s, e) => s + e.amount, 0);
   const balance = income - expense;
-  const el = (id) => document.getElementById(id);
-  if (el(expId)) el(expId).textContent = fmt(expense);
-  if (el(incId)) el(incId).textContent = fmt(income);
-  if (el(balId)) el(balId).textContent = fmtSigned(balance);
+  setEl('homeTotalExpense', fmt(expense));
+  setEl('homeTotalIncome',  fmt(income));
+  setEl('homeTotalBalance', fmtSigned(balance));
+}
+
+function setEl(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
 }
 
 // ===== ホーム：直近5件 =====
 function renderHomeRecent(list) {
   const container = document.getElementById('homeRecentList');
   if (!container) return;
-  const recent = [...list].slice(0, 5);
-  if (!recent.length) {
-    container.innerHTML = emptyState('今月の記録がありません');
-    return;
-  }
-  container.innerHTML = recent.map(e => entryHTML(e)).join('');
+  const recent = list.slice(0, 5);
+  container.innerHTML = recent.length
+    ? recent.map(e => entryHTML(e)).join('')
+    : emptyState('今月の記録がありません');
   bindDeleteButtons(container);
 }
 
@@ -265,8 +254,12 @@ function renderList(list) {
 function entryHTML(e) {
   const cat = getCat(e.cat);
   const pay = getPay(e.pay);
-  const splitBadge = e.splitId ? '<span class="badge split-badge">🤝 精算あり</span>' : '';
-  const subBadge = e.subscriptionId ? '<span class="badge">🔁 サブスク</span>' : '';
+  const splitBadge = e.isSplit
+    ? '<span class="badge split-badge">🤝 割り勘</span>'
+    : '';
+  const subBadge = e.subscriptionId
+    ? '<span class="badge">🔁 サブスク</span>'
+    : '';
   return `
     <div class="entry">
       <div class="entry-main">
@@ -289,7 +282,11 @@ function entryHTML(e) {
 function bindDeleteButtons(container) {
   container.querySelectorAll('.delete-btn[data-id]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('削除しますか？')) return;
+      const entry = allEntries.find(e => e.id === btn.dataset.id);
+      const msg = entry?.isSplit
+        ? '削除すると精算データ（割り勘記録・負債）も同時に削除されます。よろしいですか？'
+        : '削除しますか？';
+      if (!confirm(msg)) return;
       await removeEntry(btn.dataset.id);
       showToast('削除しました');
       await reload();
@@ -301,16 +298,12 @@ function emptyState(text) {
   return `<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">${text}</div></div>`;
 }
 
-// ===== 分析 =====
-function renderAnalysis(list) {
-  renderCatChart(list);
-  renderPaymentCF(list);
-}
-
+// ===== 分析：カテゴリ別 =====
 function renderCatChart(list) {
-  const expense = list.filter(e => e.type === 'expense');
   const totals = {};
-  expense.forEach(e => { totals[e.cat] = (totals[e.cat] || 0) + e.amount; });
+  list.filter(e => e.type === 'expense').forEach(e => {
+    totals[e.cat] = (totals[e.cat] || 0) + e.amount;
+  });
   const total = Object.values(totals).reduce((s, v) => s + v, 0);
   const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]);
 
@@ -335,10 +328,10 @@ function renderCatChart(list) {
     : emptyState('今月の支出データがありません');
 }
 
+// ===== 分析：支払方法別CF =====
 function renderPaymentCF(list) {
-  const expense = list.filter(e => e.type === 'expense');
   const totals = {}, counts = {};
-  expense.forEach(e => {
+  list.filter(e => e.type === 'expense').forEach(e => {
     totals[e.pay] = (totals[e.pay] || 0) + e.amount;
     counts[e.pay] = (counts[e.pay] || 0) + 1;
   });
@@ -379,7 +372,6 @@ async function onGenerateReport() {
 
   const yearMonth = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
 
-  // キャッシュ確認
   const cached = await fetchReport(yearMonth);
   if (cached) {
     contentEl.innerHTML = markdownToHTML(cached.content);
@@ -393,8 +385,6 @@ async function onGenerateReport() {
 
   try {
     const list = filteredMonthEntries();
-    const prompt = buildReportPrompt(list);
-
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -407,7 +397,7 @@ async function onGenerateReport() {
         temperature: 0.7,
         messages: [
           { role: 'system', content: buildSystemPrompt() },
-          { role: 'user',   content: prompt },
+          { role: 'user',   content: buildReportPrompt(list) },
         ],
       }),
     });
@@ -415,7 +405,6 @@ async function onGenerateReport() {
     if (!res.ok) throw new Error(`OpenAI API error: ${res.status}`);
     const data = await res.json();
     const content = data.choices[0].message.content;
-
     await saveReport(yearMonth, content, data.usage);
     contentEl.innerHTML = markdownToHTML(content);
     showToast('✅ レポートを生成しました');
@@ -451,7 +440,7 @@ function buildReportPrompt(list) {
   const catBreakdown = Object.entries(catTotals)
     .sort((a, b) => b[1] - a[1])
     .map(([id, amt]) => `${getCat(id).name}: ${fmt(amt)}`)
-    .join(', ');
+    .join(', ') || 'データなし';
 
   const payTotals = {};
   list.filter(e => e.type === 'expense').forEach(e => {
@@ -460,7 +449,7 @@ function buildReportPrompt(list) {
   const payBreakdown = Object.entries(payTotals)
     .sort((a, b) => b[1] - a[1])
     .map(([id, amt]) => `${getPay(id).name}: ${fmt(amt)}`)
-    .join(', ');
+    .join(', ') || 'データなし';
 
   const debtSummary = allDebts
     .filter(d => d.amount > 0)
@@ -474,29 +463,28 @@ function buildReportPrompt(list) {
 - 収支バランス: ${fmtSigned(balance)}
 
 【カテゴリ別支出】
-${catBreakdown || 'データなし'}
+${catBreakdown}
 
 【支払方法別支出】
-${payBreakdown || 'データなし'}
+${payBreakdown}
 
 【割り勘・精算状況】
 ${debtSummary}`;
 }
 
-// 簡易Markdownパーサー
 function markdownToHTML(md) {
   return md
     .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^## (.+)$/gm,  '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm,   '<h2>$1</h2>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/^- (.+)$/gm, '<li>$1</li>')
-    .replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>')
+    .replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>')
     .replace(/\n{2,}/g, '<br><br>')
     .replace(/\n/g, '<br>');
 }
 
-// ===== 精算 =====
+// ===== 精算画面 =====
 function renderSettle() {
   renderDebtDashboard();
   renderSplitList();
@@ -518,10 +506,10 @@ function renderDebtDashboard() {
   }
 
   container.innerHTML = activeDebts.map(debt => {
-    const fromName = getPayer(debt.from).name;
-    const toName   = getPayer(debt.to).name;
     const fromIcon = getPayer(debt.from).icon;
+    const fromName = getPayer(debt.from).name;
     const toIcon   = getPayer(debt.to).icon;
+    const toName   = getPayer(debt.to).name;
     return `
       <div class="debt-card has-debt">
         <div class="debt-row">
@@ -536,20 +524,16 @@ function renderDebtDashboard() {
       </div>`;
   }).join('');
 
-  // PayPay送金ボタン
+  // PayPay
   container.querySelectorAll('[data-paypay-amount]').forEach(btn => {
     btn.addEventListener('click', () => {
       const amount = btn.dataset.paypayAmount;
-      const url = `paypay://p2p?amount=${amount}`;
-      window.location.href = url;
-      // フォールバック
-      setTimeout(() => {
-        window.open('https://paypay.ne.jp/', '_blank');
-      }, 1500);
+      window.location.href = `paypay://p2p?amount=${amount}`;
+      setTimeout(() => window.open('https://paypay.ne.jp/', '_blank'), 1500);
     });
   });
 
-  // 精算済みボタン
+  // 精算済みに
   container.querySelectorAll('[data-debt-settle]').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (!confirm('精算済みにしますか？')) return;
@@ -559,7 +543,7 @@ function renderDebtDashboard() {
     });
   });
 
-  // 内訳モーダル
+  // 内訳
   container.querySelectorAll('[data-debt-detail]').forEach(btn => {
     btn.addEventListener('click', () => {
       const [from, to] = btn.dataset.debtDetail.split('_');
@@ -569,18 +553,14 @@ function renderDebtDashboard() {
 }
 
 function openDebtDetail(from, to) {
-  const fromName = getPayer(from).name;
-  const toName   = getPayer(to).name;
   document.getElementById('debtDetailTitle').textContent =
-    `${fromName} → ${toName} の内訳`;
+    `${getPayer(from).name} → ${getPayer(to).name} の内訳`;
 
-  const related = allSplits.filter(s => {
-    if (s.settled) return false;
-    return s.paidBy === to && s.shares?.[from] > 0;
-  });
+  const related = allSplits.filter(s =>
+    !s.settled && s.paidBy === to && (s.shares?.[from] || 0) > 0
+  );
 
-  const listEl = document.getElementById('debtDetailList');
-  listEl.innerHTML = related.length
+  document.getElementById('debtDetailList').innerHTML = related.length
     ? related.map(s => `
         <div class="split-item">
           <div class="split-main">
@@ -591,11 +571,12 @@ function openDebtDetail(from, to) {
             <div class="split-total">${fmt(s.shares?.[from] || 0)}</div>
             <div class="split-sub">負担分</div>
           </div>
-        </div>
-      `).join('')
+        </div>`)
+      .join('')
     : emptyState('内訳データがありません');
 
   openOverlay('debtDetailOverlay');
+
   document.getElementById('debtDetailClose')
     ?.addEventListener('click', () => closeOverlay('debtDetailOverlay'), { once: true });
   document.getElementById('debtDetailOverlay')
@@ -616,6 +597,8 @@ function renderSplitList() {
   container.innerHTML = allSplits.map(s => {
     const kShare = s.shares?.keisuke || 0;
     const nShare = s.shares?.nene    || 0;
+    // 紐づく明細のID（削除ボタン用）
+    const entryId = s.entryId || '';
     return `
       <div class="split-item ${s.settled ? 'settled' : ''}">
         <div class="split-main">
@@ -629,7 +612,7 @@ function renderSplitList() {
           <div class="split-total">${fmt(s.totalAmount)}</div>
           ${s.settled
             ? '<span class="settled-badge">精算済み</span>'
-            : `<button class="split-settle-btn delete-btn" data-split-id="${s.id}" style="font-size:11px;color:var(--income)">精算</button>`}
+            : `<button class="split-settle-btn" data-split-id="${s.id}">精算</button>`}
         </div>
       </div>`;
   }).join('');
@@ -655,7 +638,7 @@ function renderSubs() {
   }
 
   container.innerHTML = allSubs.map(s => {
-    const pay = getPay(s.pay);
+    const pay   = getPay(s.pay);
     const payer = getPayer(s.payer);
     return `
       <div class="sub-card ${s.active ? '' : 'inactive'}">
@@ -674,7 +657,6 @@ function renderSubs() {
       </div>`;
   }).join('');
 
-  // トグル
   container.querySelectorAll('[data-sub-toggle]').forEach(input => {
     input.addEventListener('change', async () => {
       await updateSubscription(input.dataset.subToggle, { active: input.checked });
@@ -683,7 +665,6 @@ function renderSubs() {
     });
   });
 
-  // 削除
   container.querySelectorAll('[data-sub-delete]').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (!confirm('削除しますか？')) return;

@@ -2,7 +2,7 @@ import { initializeApp } from 'firebase/app';
 import {
   getFirestore, collection, addDoc, getDocs, getDoc,
   updateDoc, deleteDoc, doc, query, orderBy, setDoc,
-  where, runTransaction, increment, serverTimestamp
+  runTransaction, increment, serverTimestamp, where
 } from 'firebase/firestore';
 
 // ===== Firebase設定 =====
@@ -24,15 +24,133 @@ export async function fetchEntries() {
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
+/**
+ * 明細を追加する。
+ * data.isSplit === true のとき、splits / debts も同一トランザクションで作成する。
+ *
+ * data: {
+ *   type, amount, memo, date, cat, pay, payer, tags,
+ *   isSplit,          // boolean
+ *   shares,           // { keisuke: number, nene: number } — isSplit=true のときのみ
+ * }
+ */
 export async function addEntry(data) {
-  return addDoc(collection(db, 'entries'), {
-    ...data,
-    createdAt: serverTimestamp(),
+  const { isSplit, shares, ...entryFields } = data;
+
+  if (!isSplit) {
+    // 割り勘なし: 通常の addDoc
+    return addDoc(collection(db, 'entries'), {
+      ...entryFields,
+      isSplit: false,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  // 割り勘あり: トランザクションで entry + split + debts を一括作成
+  return runTransaction(db, async (tx) => {
+    const now = new Date(); // serverTimestamp() はトランザクション内で使用不可のため new Date()
+
+    // 1. entry ドキュメントの参照を先に作成
+    const entryRef = doc(collection(db, 'entries'));
+
+    // 2. split ドキュメントの参照を作成
+    const splitRef = doc(collection(db, 'splits'));
+
+    // 3. entry を書き込む（splitId を持たせる）
+    tx.set(entryRef, {
+      ...entryFields,
+      isSplit: true,
+      shares,
+      splitId: splitRef.id,
+      createdAt: now,
+    });
+
+    // 4. split を書き込む（entryId を持たせる）
+    tx.set(splitRef, {
+      title: entryFields.memo || '（メモなし）',
+      date: entryFields.date,
+      totalAmount: entryFields.amount,
+      paidBy: entryFields.payer,
+      shares,
+      entryId: entryRef.id,
+      settled: false,
+      createdAt: now,
+    });
+
+    // 5. debts を更新（立替した人以外の負担分が負債になる）
+    const paidBy = entryFields.payer;
+    for (const [userId, shareAmt] of Object.entries(shares)) {
+      if (userId === paidBy || !shareAmt || shareAmt <= 0) continue;
+      const debtId = `${userId}_${paidBy}`;
+      const debtRef = doc(db, 'debts', debtId);
+      tx.set(
+        debtRef,
+        {
+          from: userId,
+          to: paidBy,
+          amount: increment(shareAmt),
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+    }
+
+    return entryRef;
   });
 }
 
-export async function removeEntry(id) {
-  return deleteDoc(doc(db, 'entries', id));
+/**
+ * 明細を削除する。
+ * 紐づく split がある場合は split も削除し、debts から該当金額を差し引く。
+ */
+export async function removeEntry(entryId) {
+  // entry を取得して splitId を確認
+  const entrySnap = await getDoc(doc(db, 'entries', entryId));
+  if (!entrySnap.exists()) return;
+
+  const entry = entrySnap.data();
+
+  if (!entry.isSplit || !entry.splitId) {
+    // 割り勘なし: entry だけ削除
+    return deleteDoc(doc(db, 'entries', entryId));
+  }
+
+  // 割り勘あり: split も取得して一括削除 + debts ロールバック
+  const splitSnap = await getDoc(doc(db, 'splits', entry.splitId));
+
+  return runTransaction(db, async (tx) => {
+    const now = new Date();
+
+    // entry 削除
+    tx.delete(doc(db, 'entries', entryId));
+
+    // split 削除
+    tx.delete(doc(db, 'splits', entry.splitId));
+
+    // debts から差し引く（split が精算済みでなければ）
+    if (splitSnap.exists()) {
+      const split = splitSnap.data();
+      if (!split.settled) {
+        const paidBy = split.paidBy;
+        for (const [userId, shareAmt] of Object.entries(split.shares || {})) {
+          if (userId === paidBy || !shareAmt || shareAmt <= 0) continue;
+          const debtId = `${userId}_${paidBy}`;
+          const debtRef = doc(db, 'debts', debtId);
+          // increment に負値を渡して差し引く（0未満にならないよう注意）
+          tx.set(
+            debtRef,
+            {
+              from: userId,
+              to: paidBy,
+              amount: increment(-shareAmt),
+              updatedAt: now,
+            },
+            { merge: true }
+          );
+        }
+      }
+    }
+  });
 }
 
 // ===========================
@@ -44,58 +162,10 @@ export async function fetchSplits() {
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
-export async function addSplit(splitData, createEntry = true) {
-  const splitRef = await runTransaction(db, async (tx) => {
-    // 1. splits に保存
-    const splitDocRef = doc(collection(db, 'splits'));
-    tx.set(splitDocRef, {
-      ...splitData,
-      settled: false,
-      createdAt: serverTimestamp(),
-    });
-
-    // 2. entryも作成する場合
-    if (createEntry) {
-      const entryRef = doc(collection(db, 'entries'));
-      tx.set(entryRef, {
-        type: 'expense',
-        amount: splitData.totalAmount,
-        memo: splitData.title,
-        date: splitData.date,
-        cat: splitData.cat || 'other',
-        pay: splitData.pay || 'cash',
-        payer: splitData.paidBy,
-        splitId: splitDocRef.id,
-        tags: '',
-        createdAt: serverTimestamp(),
-      });
-    }
-
-    // 3. debts 更新
-    // paidBy が全額立替 → 相手の shares 分が負債
-    const { paidBy, shares } = splitData;
-    for (const [userId, shareAmt] of Object.entries(shares)) {
-      if (userId === paidBy || shareAmt <= 0) continue;
-      const debtId = `${userId}_${paidBy}`;
-      const debtRef = doc(db, 'debts', debtId);
-      tx.set(debtRef, {
-        from: userId,
-        to: paidBy,
-        amount: increment(shareAmt),
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-    }
-
-    return splitDocRef;
-  });
-  return splitRef;
-}
-
 export async function settleSplit(splitId) {
-  // split を精算済みに
   await updateDoc(doc(db, 'splits', splitId), {
     settled: true,
-    settledAt: serverTimestamp(),
+    settledAt: new Date(),
   });
 }
 
@@ -108,10 +178,9 @@ export async function fetchDebts() {
 }
 
 export async function settleDebt(debtId) {
-  // 負債額を 0 にリセット
   await updateDoc(doc(db, 'debts', debtId), {
     amount: 0,
-    updatedAt: serverTimestamp(),
+    updatedAt: new Date(),
   });
 }
 
@@ -140,8 +209,8 @@ export async function removeSubscription(id) {
   return deleteDoc(doc(db, 'subscriptions', id));
 }
 
-// サブスク自動記録チェック
-export async function checkAndGenerateSubscriptions(entriesCallback) {
+// サブスク自動記録チェック（起動時に呼ぶ）
+export async function checkAndGenerateSubscriptions() {
   const today = new Date();
   const todayDay = today.getDate();
   const yyyy = today.getFullYear();
@@ -156,14 +225,13 @@ export async function checkAndGenerateSubscriptions(entriesCallback) {
     if (!sub.active) continue;
     if (sub.lastGeneratedMonth === currentMonth) continue;
 
-    // 引き落とし日の計算（月末フォールバック）
+    // 月末フォールバック（例: 31日指定で2月は28日）
     const daysInMonth = new Date(yyyy, today.getMonth() + 1, 0).getDate();
     const targetDay = Math.min(sub.billingDay, daysInMonth);
 
     if (todayDay !== targetDay) continue;
 
-    // entries に追加
-    await addEntry({
+    await addDoc(collection(db, 'entries'), {
       type: 'expense',
       amount: sub.amount,
       memo: sub.name,
@@ -171,11 +239,12 @@ export async function checkAndGenerateSubscriptions(entriesCallback) {
       cat: sub.cat,
       pay: sub.pay,
       payer: sub.payer,
+      isSplit: false,
       subscriptionId: sub.id,
       tags: '',
+      createdAt: serverTimestamp(),
     });
 
-    // lastGeneratedMonth 更新
     await updateSubscription(sub.id, { lastGeneratedMonth: currentMonth });
     generated++;
   }

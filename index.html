@@ -137,7 +137,6 @@
   <div id="screen-settle" class="screen">
     <div class="screen-header">
       <span class="screen-title">精算</span>
-      <button class="header-btn" id="addSplitBtn">＋ 記録</button>
     </div>
     <div class="section-title">負債ダッシュボード</div>
     <div id="debtDashboard" class="debt-dashboard"></div>
@@ -249,55 +248,6 @@
       <input class="form-input" id="inputTags" type="text" placeholder="例：#友人 #外食">
     </div>
     <button class="save-btn" id="saveEntryBtn">保存する</button>
-  </div>
-</div>
-
-<!-- ===== モーダル：割り勘入力 ===== -->
-<div class="overlay" id="splitOverlay">
-  <div class="modal">
-    <div class="modal-header">
-      <span class="modal-title">割り勘・立替を記録</span>
-      <button class="modal-close" id="splitOverlayClose">×</button>
-    </div>
-    <div class="form-group">
-      <label class="form-label">タイトル</label>
-      <input class="form-input" id="splitTitle" type="text" placeholder="例：居酒屋 渋谷">
-    </div>
-    <div class="form-group">
-      <label class="form-label">日付</label>
-      <input class="form-input" id="splitDate" type="date">
-    </div>
-    <div class="form-group">
-      <label class="form-label">支払総額（円）</label>
-      <input class="form-input amount-input" id="splitTotal" type="number" inputmode="decimal" placeholder="0">
-    </div>
-    <div class="form-group">
-      <label class="form-label">実際に払った人</label>
-      <div class="chip-grid-2" id="splitPaidByGrid"></div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">各自の負担額（円）</label>
-      <div class="split-shares-row">
-        <div class="split-share-item">
-          <label class="form-label" style="margin-bottom:6px">👨 慶佑</label>
-          <input class="form-input" id="splitShareKeisuke" type="number" inputmode="decimal" placeholder="0">
-        </div>
-        <div class="split-share-item">
-          <label class="form-label" style="margin-bottom:6px">👩 寧子</label>
-          <input class="form-input" id="splitShareNene" type="number" inputmode="decimal" placeholder="0">
-        </div>
-      </div>
-      <div id="splitValidationMsg" class="validation-msg"></div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">メモ（任意）</label>
-      <input class="form-input" id="splitNote" type="text" placeholder="自由記述">
-    </div>
-    <div class="form-group form-check-row">
-      <input type="checkbox" id="splitCreateEntry" checked>
-      <label for="splitCreateEntry" class="form-label" style="margin:0">明細にも記録する</label>
-    </div>
-    <button class="save-btn" id="saveSplitBtn">保存する</button>
   </div>
 </div>
 
